@@ -146,6 +146,9 @@ export interface StaticSiteArgs extends BaseStaticSiteArgs {
       /**
        * The KV store to associate with the viewer request function.
        *
+       * The site's routes are written to it, unless `edgeRouting` is `false`, where
+       * it's only associated for your `injection` to use.
+       *
        * @example
        * ```js
        * {
@@ -578,6 +581,42 @@ export interface StaticSiteArgs extends BaseStaticSiteArgs {
     }
   >;
   /**
+   * Route requests with a CloudFront Function and a KeyValueStore that lists the site's
+   * files. This is what lets `/about` serve `about.html` or `about/index.html`.
+   *
+   * Set this to `false` to serve the site straight from the assets bucket, with no
+   * function or KeyValueStore:
+   *
+   * - `/` serves the `indexPage`.
+   * - Any other path serves the file at that exact path.
+   * - A path with no file serves the `errorPage` with a 404. Without an `errorPage`, it
+   *   serves the `indexPage` with a 200, so a single-page app can handle the route.
+   *
+   * Use it for a single-page app, or when a policy on your account denies the
+   * KeyValueStore API. Its requests are signed for all regions (SigV4A), so a policy
+   * that limits regions, like a service control policy, blocks them.
+   *
+   * :::caution
+   * Without edge routing, `/about` doesn't serve `about.html` or `about/index.html`.
+   * Don't use it for a site with a page for each path.
+   * :::
+   *
+   * A viewer request function is still created for `edge.viewerRequest.injection`, or
+   * to block the CloudFront URL when you set a `domain`. `assets.routes` has no effect.
+   *
+   * Can't be used with the `router` prop. An SST `Router` finds and serves its sites
+   * through its KeyValueStore, so a site behind one needs edge routing.
+   *
+   * @default `true`
+   * @example
+   * ```js
+   * {
+   *   edgeRouting: false
+   * }
+   * ```
+   */
+  edgeRouting?: boolean;
+  /**
    * @deprecated The `route.path` prop is now the recommended way to configure the base
    * path for the site.
    */
@@ -722,6 +761,17 @@ export interface StaticSiteArgs extends BaseStaticSiteArgs {
  * });
  * ```
  *
+ * #### Serve a SPA without edge routing
+ *
+ * Serve a SPA straight from its bucket, without a CloudFront Function or
+ * KeyValueStore. Also useful if a policy on your account denies the KeyValueStore API.
+ *
+ * ```js {2} title="sst.config.ts"
+ * new sst.aws.StaticSite("MyWeb", {
+ *   edgeRouting: false
+ * });
+ * ```
+ *
  * #### Set environment variables
  *
  * Set `environment` variables for the build process of your static site. These will be used locally and on deploy.
@@ -781,6 +831,7 @@ export class StaticSite extends Component implements Link.Linkable {
     }
 
     const route = normalizeRoute();
+    const edgeRouting = args.edgeRouting ?? true;
     const errorPage = normalizeErrorPage();
     const assets = normalizeAsssets();
     const outputPath = buildApp(self, name, args.build, sitePath, environment);
@@ -792,7 +843,7 @@ export class StaticSite extends Component implements Link.Linkable {
     let originAccessControl: OriginAccessControl | undefined;
     let distribution: Cdn | undefined;
     let distributionId: Output<string>;
-    let kvStoreArn: Output<string>;
+    let kvStoreArn: Output<string> | undefined;
     let invalidationDependsOn: Resource[] = [];
     let prodUrl: Output<string | undefined>;
     if (route) {
@@ -801,7 +852,7 @@ export class StaticSite extends Component implements Link.Linkable {
       invalidationDependsOn = [updateRouterKvRoutes()];
       prodUrl = route.routerUrl;
     } else {
-      kvStoreArn = createRequestKvStore();
+      if (edgeRouting) kvStoreArn = createRequestKvStore();
       distribution = createDistribution();
       distributionId = distribution.nodes.distribution.id;
       prodUrl = distribution.domainUrl.apply((domainUrl) =>
@@ -809,7 +860,8 @@ export class StaticSite extends Component implements Link.Linkable {
       );
     }
 
-    const kvUpdated = createKvEntries();
+    const kvUpdated = edgeRouting ? createKvEntries() : undefined;
+    if (kvUpdated) invalidationDependsOn.push(kvUpdated);
     createInvalidation();
 
     this.bucket = bucket;
@@ -842,6 +894,11 @@ export class StaticSite extends Component implements Link.Linkable {
       const route = normalizeRouteArgs(args.router, args.route);
 
       if (route) {
+        if (args.edgeRouting === false)
+          throw new VisibleError(
+            `Cannot provide both "edgeRouting: false" and "router". An SST "Router" finds and serves its sites through its KeyValueStore, so a site behind one needs edge routing. Remove "router" to serve the site from its own distribution without edge routing.`,
+          );
+
         if (args.domain)
           throw new VisibleError(
             `Cannot provide both "domain" and "route". Use the "domain" prop on the "Router" component when serving your site through a Router.`,
@@ -1118,6 +1175,8 @@ export class StaticSite extends Component implements Link.Linkable {
     }
 
     function createRequestFunction() {
+      if (!edgeRouting) return createInjectionRequestFunction();
+
       return output(args.edge).apply((edge) => {
         const userInjection = edge?.viewerRequest?.injection ?? "";
         const blockCloudfrontUrlInjection = args.domain
@@ -1146,6 +1205,35 @@ async function handler(event) {
 
   const response = await routeSite(kvNamespace, metadata);
   return response || event.request;
+}`,
+          },
+          { parent: self },
+        );
+      });
+    }
+
+    // With `edgeRouting: false`, the function only runs the injections, and is
+    // skipped without any.
+    function createInjectionRequestFunction() {
+      return output(args.edge).apply((edge) => {
+        const userInjection = edge?.viewerRequest?.injection ?? "";
+        const userKvStore = edge?.viewerRequest?.kvStore;
+        const blockCloudfrontUrlInjection = args.domain
+          ? CF_BLOCK_CLOUDFRONT_URL_INJECTION
+          : "";
+        if (!userInjection && !blockCloudfrontUrlInjection) return;
+
+        return new cloudfront.Function(
+          `${name}CloudfrontFunctionRequest`,
+          {
+            runtime: "cloudfront-js-2.0",
+            keyValueStoreAssociations: userKvStore ? [userKvStore] : [],
+            code: `
+import cf from "cloudfront";
+async function handler(event) {
+  ${userInjection}
+  ${blockCloudfrontUrlInjection}
+  return event.request;
 }`,
           },
           { parent: self },
@@ -1187,11 +1275,10 @@ async function handler(event) {
     }
 
     // The default origin. CloudFront fetches custom error pages without running
-    // the viewer request function, so a site with an error page needs the bucket
-    // itself as its default origin, not a placeholder. A site without one keeps
-    // the placeholder, and creates no access control. This is a plain array
-    // unless `errorPage` is itself an Output, so a `transform.cdn` that reads
-    // `args.origins` still gets an array.
+    // the viewer request function, so a site with an error page, or with
+    // `edgeRouting: false` (no function to set the origin), uses the bucket, not a
+    // placeholder. Otherwise it's the placeholder, with no access control. A plain
+    // array unless `errorPage` is an Output, so `transform.cdn` gets an array.
     function createDefaultOrigins() {
       const placeholder = () => [
         {
@@ -1214,6 +1301,13 @@ async function handler(event) {
         },
       ];
 
+      if (!edgeRouting)
+        return [
+          {
+            ...bucketOrigin()[0],
+            originPath: assets.path?.apply((assetsPath) => "/" + assetsPath),
+          },
+        ];
       if (!args.errorPage) return placeholder();
       if (!Output.isInstance(args.errorPage)) return bucketOrigin();
       return args.errorPage.apply((errorPage) =>
@@ -1229,10 +1323,6 @@ async function handler(event) {
           {
             comment: `${name} site`,
             domain: args.domain,
-            // CloudFront fetches custom error pages without running the
-            // viewer request function, so a site with an error page needs the
-            // bucket itself as its default origin, not a placeholder. A site
-            // without one keeps the placeholder, and creates no access control.
             origins: createDefaultOrigins(),
             defaultCacheBehavior: {
               targetOriginId: "default",
@@ -1254,17 +1344,32 @@ async function handler(event) {
                 createRequestFunction(),
                 createResponseFunction(),
               ]).apply(([reqFn, resFn]) => [
-                { eventType: "viewer-request", functionArn: reqFn.arn },
+                ...(reqFn
+                  ? [{ eventType: "viewer-request", functionArn: reqFn.arn }]
+                  : []),
                 ...(resFn
                   ? [{ eventType: "viewer-response", functionArn: resFn.arn }]
                   : []),
               ]),
             },
+            // With `edgeRouting: false`, CloudFront serves the index page for `/`
+            defaultRootObject: edgeRouting
+              ? undefined
+              : indexPage.apply((indexPage) => indexPage.replace(/^\//, "")),
             customErrorResponses: all([
               args.errorPage,
               errorPage,
               assets.path,
             ]).apply(([hasCustomErrorPage, errorPage, assetsPath]) => {
+              // Error page, or index page with a 200 for a SPA. The origin path
+              // already has the assets path.
+              if (!edgeRouting)
+                return [403, 404].map((errorCode) => ({
+                  errorCode,
+                  responseCode: hasCustomErrorPage ? 404 : 200,
+                  responsePagePath: errorPage,
+                  errorCachingMinTtl: 0,
+                }));
               if (!hasCustomErrorPage) return [];
               // Error page fetches skip the viewer request function, which is
               // what prepends the assets path for every other request. (This
@@ -1338,7 +1443,7 @@ async function handler(event) {
             },
             {
               parent: self,
-              dependsOn: [assetsUploaded, kvUpdated, ...invalidationDependsOn],
+              dependsOn: [assetsUploaded, ...invalidationDependsOn],
             },
           );
         },
