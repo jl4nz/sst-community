@@ -96,6 +96,9 @@ export interface StaticSiteArgs extends BaseStaticSiteArgs {
      * - Rewrite URLs to append `index.html` to the URL if the URL ends with a `/`.
      * - Rewrite URLs to append `.html` to the URL if the URL does not contain a file extension.
      *
+     * With [`edgeRouting`](#edgerouting) set to `false`, URLs aren't rewritten, and the
+     * function is only created for your `injection`, or to disable the CloudFront URL.
+     *
      * @example
      *
      * You can pass in the code to inject into the function. The provided code will
@@ -373,6 +376,9 @@ export interface StaticSiteArgs extends BaseStaticSiteArgs {
        *   }
        * }
        * ```
+       *
+       * Has no effect with [`edgeRouting`](#edgerouting) set to `false`, which serves every
+       * file in the bucket at its exact path.
        */
       routes?: Input<Input<string>[]>;
     }
@@ -891,14 +897,14 @@ export class StaticSite extends Component implements Link.Linkable {
     }
 
     function normalizeRoute() {
+      if (args.edgeRouting === false && (args.router || args.route))
+        throw new VisibleError(
+          `Cannot provide both "edgeRouting: false" and "router". An SST "Router" finds and serves its sites through its KeyValueStore, so a site behind one needs edge routing. Remove "router" to serve the site from its own distribution without edge routing.`,
+        );
+
       const route = normalizeRouteArgs(args.router, args.route);
 
       if (route) {
-        if (args.edgeRouting === false)
-          throw new VisibleError(
-            `Cannot provide both "edgeRouting: false" and "router". An SST "Router" finds and serves its sites through its KeyValueStore, so a site behind one needs edge routing. Remove "router" to serve the site from its own distribution without edge routing.`,
-          );
-
         if (args.domain)
           throw new VisibleError(
             `Cannot provide both "domain" and "route". Use the "domain" prop on the "Router" component when serving your site through a Router.`,
@@ -1305,7 +1311,9 @@ async function handler(event) {
         return [
           {
             ...bucketOrigin()[0],
-            originPath: assets.path?.apply((assetsPath) => "/" + assetsPath),
+            originPath: assets.path?.apply((assetsPath) =>
+              assetsPath ? "/" + assetsPath : "",
+            ),
           },
         ];
       if (!args.errorPage) return placeholder();

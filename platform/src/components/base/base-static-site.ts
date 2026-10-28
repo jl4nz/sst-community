@@ -90,7 +90,9 @@ export interface BaseStaticSiteArgs {
    * The name of the index page of the site. This is a path relative to the root of your site, or the `path`.
    *
    * :::note
-   * The index page only applies to the root of your site.
+   * The index page only applies to the root of your site. The exception is a
+   * `StaticSite` with `edgeRouting: false` and no `errorPage`, which also serves it for
+   * missing paths.
    * :::
    *
    * By default this is set to `index.html`. So if a visitor goes to your site, let's say `example.com`, `example.com/index.html` will be served.

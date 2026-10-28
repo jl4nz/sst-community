@@ -202,6 +202,51 @@ describe("StaticSite", function () {
   });
 
   describe("with edgeRouting: false", () => {
+    it("throws with a router", () => {
+      expect(
+        () =>
+          new StaticSite("NoEdgeRouter", {
+            path: sitePath,
+            edgeRouting: false,
+            router: { instance: {} as any },
+          }),
+      ).toThrow(/Cannot provide both "edgeRouting: false" and "router"/);
+    });
+
+    it("creates only the CloudFront URL block for a domain", async () => {
+      new StaticSite("NoEdgeDomain", {
+        path: sitePath,
+        edgeRouting: false,
+        domain: {
+          name: "example.com",
+          dns: false,
+          cert: "arn:aws:acm:us-east-1:123456789012:certificate/mine",
+        },
+      });
+      await settle();
+
+      const fns = createdResources.filter(
+        (r) => r.type === "aws:cloudfront/function:Function",
+      );
+      expect(fns).toHaveLength(1);
+      expect(fns[0].inputs.code).toContain("cloudfront.net");
+      expect(fns[0].inputs.code).not.toContain("kvs()");
+      expect(fns[0].inputs.keyValueStoreAssociations).toEqual([]);
+    });
+
+    it("sets no origin path when the assets path is the root", async () => {
+      new StaticSite("NoEdgeRootPath", {
+        path: sitePath,
+        edgeRouting: false,
+        assets: { path: "/" },
+      });
+      await settle();
+
+      expect(
+        findDistribution("NoEdgeRootPath").inputs.origins[0].originPath,
+      ).toBe("");
+    });
+
     it("creates no KeyValueStore, keys or request function", async () => {
       new StaticSite("NoEdgeSite", { path: sitePath, edgeRouting: false });
       await settle();
