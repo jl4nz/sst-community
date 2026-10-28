@@ -149,8 +149,9 @@ export interface StaticSiteArgs extends BaseStaticSiteArgs {
       /**
        * The KV store to associate with the viewer request function.
        *
-       * The site's routes are written to it, unless `edgeRouting` is `false`, where
-       * it's only associated for your `injection` to use.
+       * The site's routes are written to it, unless `edgeRouting` is `false`. Then it's
+       * only associated when a viewer request function is created, for your `injection`
+       * to use.
        *
        * @example
        * ```js
@@ -378,7 +379,7 @@ export interface StaticSiteArgs extends BaseStaticSiteArgs {
        * ```
        *
        * Has no effect with [`edgeRouting`](#edgerouting) set to `false`, which serves every
-       * file in the bucket at its exact path.
+       * file under `assets.path` at its exact path.
        */
       routes?: Input<Input<string>[]>;
     }
