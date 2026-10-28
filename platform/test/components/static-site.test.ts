@@ -335,7 +335,10 @@ describe("StaticSite", function () {
         edgeRouting: false,
         edge: {
           viewerRequest: {
-            injection: `event.request.headers["x-test"] = { value: "1" };`,
+            // An Output, to check it's resolved, not stringified, into the code
+            injection: pulumi.output(
+              `event.request.headers["x-test"] = { value: "1" };`,
+            ),
             kvStore: "arn:aws:cloudfront::123456789012:key-value-store/mine",
           },
         },

@@ -899,7 +899,7 @@ export class StaticSite extends Component implements Link.Linkable {
     function normalizeRoute() {
       if (args.edgeRouting === false && (args.router || args.route))
         throw new VisibleError(
-          `Cannot provide both "edgeRouting: false" and "router". An SST "Router" finds and serves its sites through its KeyValueStore, so a site behind one needs edge routing. Remove "router" to serve the site from its own distribution without edge routing.`,
+          `Cannot provide both "edgeRouting: false" and "router" (or the deprecated "route"). An SST "Router" finds and serves its sites through its KeyValueStore, so a site behind one needs edge routing. Remove "router" or "route" to serve the site from its own distribution without edge routing.`,
         );
 
       const route = normalizeRouteArgs(args.router, args.route);
